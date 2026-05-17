@@ -195,6 +195,11 @@ export default {
                 const sources = await getSources(media);
                 return json(
                     {
+                        debug: {
+                            workerOrigin,
+                            testUrl: resolveStreamUrl("http://localhost/v1/proxy?data=test", workerOrigin),
+                            rawUrls: sources.map((s: any) => s.url)
+                        },
                         streams: sources.map((s: any) => ({
                             name: `CinePro [${s.provider?.name ?? 'Unknown'}]`,
                             title: `🎞️ ${s.quality ?? 'Auto'}`,
