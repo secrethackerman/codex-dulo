@@ -336,7 +336,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
             align-items: center;
             height: 100vh;
             font-family: sans-serif;
-            overflow: hidden;
         }
         #player-wrapper {
             width: 100%;
@@ -350,20 +349,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
             visibility: hidden !important;
             opacity: 0 !important;
         }
-        #loading-gif {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 100vw;
-            z-index: 9999;
-            pointer-events: none;
-        }
     </style>
 </head>
 <body>
-
-    <img id="loading-gif" src="https://i.postimg.cc/x8p5GsbF/Loading.gif" />
 
     <div id="player-wrapper">
         <div id="my-player"></div>
@@ -385,34 +373,38 @@ const HTML_CONTENT = `<!DOCTYPE html>
             }
         })();
 
-        function removeLoadingGif() {
-            var gif = document.getElementById('loading-gif');
-            if (gif) {
-                gif.style.display = 'none';
-            }
-        }
+        // ── Wyzie Subs ───────────────────────────────────────────────────────────
+        // Free, no account needed. Get your key instantly at: https://sub.wyzie.io/redeem
+        var WYZIE_API_KEY = "wyzie-7b44a4d0d92d7b5e13efca4a53080b19"; // <-- paste your key here
 
-        var WYZIE_API_KEY = "wyzie-7b44a4d0d92d7b5e13efca4a53080b19"; 
-
+        /**
+         * Parse the hash into { type, tmdbId, season, episode }
+         * Hash format:  #movie/12345  or  #tv/12345/1/2
+         */
         function parseHash() {
             var raw   = window.location.hash.replace("#", "");
             var parts = raw.split("/");
             return {
-                type:    parts[0], 
+                type:    parts[0], // "movie" or "tv"
                 tmdbId:  parts[1] || null,
                 season:  parts[2] || null,
                 episode: parts[3] || null
             };
         }
 
+        /**
+         * Fetch subtitle tracks from Wyzie Subs for the current content.
+         * Returns an array of JW Player track objects:
+         *   { file, label, kind: "captions", default: bool }
+         */
         async function fetchSubtitles() {
             var info = parseHash();
             if (!info.tmdbId) return [];
 
             var params = new URLSearchParams({
-                id:     info.tmdbId,  
-                format: "srt,vtt",    
-                source: "all",        
+                id:     info.tmdbId,   // Wyzie accepts TMDB IDs directly
+                format: "srt,vtt",     // prefer vtt (native to JW), srt as fallback
+                source: "all",         // query all sources for best coverage
                 key:    WYZIE_API_KEY
             });
 
@@ -428,6 +420,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
                 var items = await res.json();
                 if (!Array.isArray(items) || items.length === 0) return [];
 
+                // Deduplicate: one subtitle per language, preferring vtt over srt
                 var byLang = {};
                 items.forEach(function(item) {
                     var lang = item.language;
@@ -440,6 +433,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
                     }
                 });
 
+                // Build JW Player track objects
                 var tracks = [];
                 var isDefault = true;
 
@@ -461,10 +455,14 @@ const HTML_CONTENT = `<!DOCTYPE html>
                 return [];
             }
         }
+        // ── End Wyzie Subs ───────────────────────────────────────────────────────
 
+
+        // Listen for messages from a parent iframe
         window.addEventListener('message', function(event) {
             if (!event.data) return;
 
+            // Return all stored watch progress to the requester
             if (event.data.type === 'apiGetWatchTimes') {
                 var watchTimes = {};
                 for (var i = 0; i < localStorage.length; i++) {
@@ -476,6 +474,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
                 event.source.postMessage({ type: 'watchTimesResponse', watchTimes: watchTimes }, event.origin);
             }
 
+            // Seek the player to a specific time in seconds
             if (event.data.type === 'seekTo') {
                 var seconds = parseFloat(event.data.seconds);
                 if (!isNaN(seconds)) {
@@ -517,13 +516,14 @@ const HTML_CONTENT = `<!DOCTYPE html>
         var jsonUrl = final_urll;
 
         if (jsonUrl) {
+            // Fetch streams and subtitles in parallel
             Promise.all([
                 fetch(jsonUrl).then(function(r) { return r.json(); }),
                 fetchSubtitles()
             ])
             .then(function(results) {
                 var data   = results[0];
-                var tracks = results[1]; 
+                var tracks = results[1]; // subtitle tracks (may be empty)
 
                 var streams = data.streams || [];
                 var hashParts = window.location.hash.split('/');
@@ -531,6 +531,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
                 var sourceKey = '!' + (isTvHash ? hashParts.slice(0, 2).join('/') : window.location.hash);
                 var lastWorkingName = localStorage.getItem(sourceKey);
 
+                // Move last known working source to front, keeping others as fallbacks
                 if (lastWorkingName && streams.length > 1) {
                     var preferredIndex = streams.findIndex(function(s) {
                         return (s.name || s.title) === lastWorkingName;
@@ -545,7 +546,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
                 function tryNextStream() {
                     if (currentStreamIndex >= streams.length) {
-                        removeLoadingGif();
                         return;
                     }
 
@@ -557,6 +557,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
                         streamType = "hls";
                     }
 
+                    // Build playlist item — attach subtitle tracks if we have any
                     var playlistItem = {
                         "title": stream.name || stream.title,
                         "file":  streamUrl,
@@ -570,13 +571,12 @@ const HTML_CONTENT = `<!DOCTYPE html>
                         "playlist": [playlistItem]
                     });
 
-                    playerInstance.on('ready', removeLoadingGif);
-
                     var isTvShow = window.location.hash.indexOf("tv") !== -1 || window.location.hash.indexOf("series") !== -1 || window.location.hash.split("/").length > 2;
                     var messageSent = false;
                     var hasSeeked = false;
 
                     playerInstance.on('firstFrame', function() {
+                        // Save this source as the last working one
                         localStorage.setItem(sourceKey, stream.name || stream.title);
 
                         var savedTime = localStorage.getItem(window.location.hash);
@@ -614,12 +614,9 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
                 if (streams.length > 0) {
                     tryNextStream();
-                } else {
-                    removeLoadingGif();
                 }
             })
             .catch(function(err) {
-                removeLoadingGif();
                 console.error(err);
             });
         } else {
@@ -630,8 +627,6 @@ const HTML_CONTENT = `<!DOCTYPE html>
                     "type": "mp4" 
                 }]
             });
-            
-            playerInstance.on('ready', removeLoadingGif);
 
             playerInstance.on('error', function(e) {
                 console.error("Player Error Code: " + e.code);
@@ -645,6 +640,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
                 localStorage.setItem(window.location.hash, player.getPosition());
             }
         }, 2000);
+
     </script>
 
 </body>
