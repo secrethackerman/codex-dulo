@@ -122,8 +122,17 @@ function parseImdbId(raw: string): string {
  */
 function resolveStreamUrl(url: string, workerOrigin: string): string {
     if (!url) return url;
-    // Already absolute — return as-is
+    
+    // The @omss/framework hardcodes localhost in its ProxyService
+    // We need to rewrite it to point to the CF Worker origin
+    if (url.startsWith('http://localhost') && url.includes('/v1/proxy')) {
+        const urlObj = new URL(url);
+        return `${workerOrigin}${urlObj.pathname}${urlObj.search}`;
+    }
+    
+    // Already absolute and not localhost — return as-is
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    
     // Relative proxy path produced by the framework → make it absolute
     return `${workerOrigin}${url.startsWith('/') ? '' : '/'}${url}`;
 }
