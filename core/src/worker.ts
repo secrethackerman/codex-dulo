@@ -176,6 +176,16 @@ export default {
             });
         }
 
+        // ── Stream Player HTML ──────────────────────────────────────────────
+        if (pathname === '/5') {
+            return new Response(HTML_CONTENT, {
+                headers: {
+                    'Content-Type': 'text/html; charset=utf-8',
+                    ...corsHeaders(origin)
+                }
+            });
+        }
+
         // ── Stremio manifest ───────────────────────────────────────────────
         if (pathname === '/stremio/manifest.json' || pathname === '/manifest.json') {
             return json(MANIFEST, 200, origin);
@@ -308,3 +318,334 @@ export default {
         return new Response('Not Found', { status: 404, headers: corsHeaders(origin) });
     }
 };
+
+const HTML_CONTENT = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Player</title>
+    <script src="https://content.jwplatform.com/libraries/hDZaZjnc.js"></script>
+    <style>
+        body {
+            background-color: #000;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: sans-serif;
+            overflow: hidden;
+        }
+        #player-wrapper {
+            width: 100%;
+            max-width: 960px;
+        }
+        .jw-logo, 
+        .jw-watermark, 
+        .jw-rightclick-logo,
+        .jw-button-container .jw-logo-button {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+        }
+        #loading-gif {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100vw;
+            z-index: 9999;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <img id="loading-gif" src="https://i.postimg.cc/x8p5GsbF/Loading.gif" />
+
+    <div id="player-wrapper">
+        <div id="my-player"></div>
+    </div>
+
+    <script type="text/javascript">
+        const final_urll = (() => {
+            var raw = window.location.hash.replace("#", "");
+            var parts = raw.split("/");
+            var type = parts[0] === "tv" ? "series" : parts[0];
+            var id = parts[1] || "";
+            var season = parts[2];
+            var episode = parts[3];
+            if (!id) return "";
+            if (type === "movie") {
+                return window.location.origin + "/stream/movie/" + id + ".json";
+            } else {
+                return window.location.origin + "/stream/series/" + id + ":" + season + ":" + episode + ".json";
+            }
+        })();
+
+        function removeLoadingGif() {
+            var gif = document.getElementById('loading-gif');
+            if (gif) {
+                gif.style.display = 'none';
+            }
+        }
+
+        var WYZIE_API_KEY = "wyzie-7b44a4d0d92d7b5e13efca4a53080b19"; 
+
+        function parseHash() {
+            var raw   = window.location.hash.replace("#", "");
+            var parts = raw.split("/");
+            return {
+                type:    parts[0], 
+                tmdbId:  parts[1] || null,
+                season:  parts[2] || null,
+                episode: parts[3] || null
+            };
+        }
+
+        async function fetchSubtitles() {
+            var info = parseHash();
+            if (!info.tmdbId) return [];
+
+            var params = new URLSearchParams({
+                id:     info.tmdbId,  
+                format: "srt,vtt",    
+                source: "all",        
+                key:    WYZIE_API_KEY
+            });
+
+            if (info.type === "tv" && info.season && info.episode) {
+                params.set("season",  info.season);
+                params.set("episode", info.episode);
+            }
+
+            try {
+                var res = await fetch("https://sub.wyzie.io/search?" + params.toString());
+                if (!res.ok) return [];
+
+                var items = await res.json();
+                if (!Array.isArray(items) || items.length === 0) return [];
+
+                var byLang = {};
+                items.forEach(function(item) {
+                    var lang = item.language;
+                    if (!lang || !item.url) return;
+                    var existing = byLang[lang];
+                    var betterFormat = item.format === "vtt" && (!existing || existing.format !== "vtt");
+                    var moreDownloads = !betterFormat && (!existing || (item.downloadCount || 0) > (existing.downloadCount || 0));
+                    if (!existing || betterFormat || moreDownloads) {
+                        byLang[lang] = item;
+                    }
+                });
+
+                var tracks = [];
+                var isDefault = true;
+
+                for (var lang in byLang) {
+                    var sub = byLang[lang];
+                    tracks.push({
+                        file:      sub.url,
+                        label:     sub.display || lang,
+                        kind:      "captions",
+                        "default": isDefault
+                    });
+                    isDefault = false;
+                }
+
+                return tracks;
+
+            } catch(err) {
+                console.warn("Wyzie Subs fetch error:", err);
+                return [];
+            }
+        }
+
+        window.addEventListener('message', function(event) {
+            if (!event.data) return;
+
+            if (event.data.type === 'apiGetWatchTimes') {
+                var watchTimes = {};
+                for (var i = 0; i < localStorage.length; i++) {
+                    var key = localStorage.key(i);
+                    if (key && key.startsWith('#')) {
+                        watchTimes[key] = parseFloat(localStorage.getItem(key));
+                    }
+                }
+                event.source.postMessage({ type: 'watchTimesResponse', watchTimes: watchTimes }, event.origin);
+            }
+
+            if (event.data.type === 'seekTo') {
+                var seconds = parseFloat(event.data.seconds);
+                if (!isNaN(seconds)) {
+                    var player = jwplayer("my-player");
+                    if (player && typeof player.seek === 'function') {
+                        player.seek(seconds);
+                    }
+                }
+            }
+        });
+
+        var jwDefaults = {
+            "aboutlink": "", 
+            "abouttext": "",
+            "aspectratio": "16:9",
+            "autostart": false,
+            "controls": true,
+            "displaydescription": false,
+            "displaytitle": false,
+            "height": 260,
+            "key": "o1aKtlYdYI2llgu/6IMNmcEjWjum4eDR3q3+F/EE2gNzepJWQUAb/YABcVugVUdl",
+            "logo": {
+                "file": "",      
+                "hide": true,    
+                "link": ""       
+            },
+            "mute": false,       
+            "ph": 1,
+            "pid": "hDZaZjnc",
+            "playbackRateControls": [0.5, 1, 1.25, 1.5, 2], 
+            "preload": "metadata",
+            "repeat": false,
+            "stretching": "uniform",
+            "width": "100%"
+        };
+
+        jwplayer.defaults = jwDefaults;
+
+        var jsonUrl = final_urll;
+
+        if (jsonUrl) {
+            Promise.all([
+                fetch(jsonUrl).then(function(r) { return r.json(); }),
+                fetchSubtitles()
+            ])
+            .then(function(results) {
+                var data   = results[0];
+                var tracks = results[1]; 
+
+                var streams = data.streams || [];
+                var hashParts = window.location.hash.split('/');
+                var isTvHash = window.location.hash.indexOf('tv') !== -1 || window.location.hash.indexOf('series') !== -1;
+                var sourceKey = '!' + (isTvHash ? hashParts.slice(0, 2).join('/') : window.location.hash);
+                var lastWorkingName = localStorage.getItem(sourceKey);
+
+                if (lastWorkingName && streams.length > 1) {
+                    var preferredIndex = streams.findIndex(function(s) {
+                        return (s.name || s.title) === lastWorkingName;
+                    });
+                    if (preferredIndex > 0) {
+                        var preferred = streams.splice(preferredIndex, 1)[0];
+                        streams.unshift(preferred);
+                    }
+                }
+
+                var currentStreamIndex = 0;
+
+                function tryNextStream() {
+                    if (currentStreamIndex >= streams.length) {
+                        removeLoadingGif();
+                        return;
+                    }
+
+                    var stream = streams[currentStreamIndex];
+                    var streamUrl = stream.url;
+                    var streamType = "mp4"; 
+
+                    if (streamUrl.indexOf("m3u8") !== -1 || decodeURIComponent(streamUrl).indexOf("m3u8") !== -1) {
+                        streamType = "hls";
+                    }
+
+                    var playlistItem = {
+                        "title": stream.name || stream.title,
+                        "file":  streamUrl,
+                        "type":  streamType
+                    };
+                    if (tracks && tracks.length > 0) {
+                        playlistItem.tracks = tracks;
+                    }
+
+                    var playerInstance = jwplayer("my-player").setup({
+                        "playlist": [playlistItem]
+                    });
+
+                    playerInstance.on('ready', removeLoadingGif);
+
+                    var isTvShow = window.location.hash.indexOf("tv") !== -1 || window.location.hash.indexOf("series") !== -1 || window.location.hash.split("/").length > 2;
+                    var messageSent = false;
+                    var hasSeeked = false;
+
+                    playerInstance.on('firstFrame', function() {
+                        localStorage.setItem(sourceKey, stream.name || stream.title);
+
+                        var savedTime = localStorage.getItem(window.location.hash);
+                        if (savedTime && !hasSeeked) {
+                            playerInstance.seek(parseFloat(savedTime));
+                            hasSeeked = true;
+                        }
+                    });
+
+                    playerInstance.on('time', function(e) {
+                        window.parent.postMessage({ type: 'currentTime', seconds: e.position }, '*');
+
+                        if (isTvShow && !messageSent && e.duration > 0) {
+                            if (e.duration - e.position <= 60) {
+                                window.parent.postMessage({ type: 'episodeAlmostOver', hash: window.location.hash }, '*');
+                                messageSent = true;
+                            }
+                        }
+                    });
+
+                    playerInstance.on('error', function(e) {
+                        console.error("Player Error Code: " + e.code);
+                        console.error("Message: " + e.message);
+                        currentStreamIndex++;
+                        tryNextStream();
+                    });
+
+                    playerInstance.on('setupError', function(e) {
+                        console.error("Player Error Code: " + e.code);
+                        console.error("Message: " + e.message);
+                        currentStreamIndex++;
+                        tryNextStream();
+                    });
+                }
+
+                if (streams.length > 0) {
+                    tryNextStream();
+                } else {
+                    removeLoadingGif();
+                }
+            })
+            .catch(function(err) {
+                removeLoadingGif();
+                console.error(err);
+            });
+        } else {
+            var playerInstance = jwplayer("my-player").setup({
+                "playlist": [{
+                    "title": "REPLACE_ME",
+                    "file": "REPLACE_ME",
+                    "type": "mp4" 
+                }]
+            });
+            
+            playerInstance.on('ready', removeLoadingGif);
+
+            playerInstance.on('error', function(e) {
+                console.error("Player Error Code: " + e.code);
+                console.error("Message: " + e.message);
+            });
+        }
+
+        setInterval(function() {
+            var player = jwplayer("my-player");
+            if (player && typeof player.getState === 'function' && player.getState() === 'playing') {
+                localStorage.setItem(window.location.hash, player.getPosition());
+            }
+        }, 2000);
+    </script>
+
+</body>
+</html>\`;
