@@ -1,0 +1,10 @@
+name = "cinepro-core"
+main = "src/worker.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+STREMIO_ADDON = "true"
+# Set via Cloudflare dashboard secrets:
+# TMDB_API_KEY = "..."
+# CORS_ORIGIN = "*"

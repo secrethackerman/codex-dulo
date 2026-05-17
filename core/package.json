@@ -1,0 +1,27 @@
+{
+    "name": "@cinepro/core",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "wrangler dev",
+        "deploy": "wrangler deploy",
+        "format": "prettier --write src",
+        "clean": "npx rimraf dist"
+    },
+    "dependencies": {
+        "@omss/framework": "^1.1.19",
+        "cheerio": "^1.2.0",
+        "crypto-js": "^4.2.0",
+        "dotenv": "^16.4.5"
+    },
+    "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260517.1",
+        "@types/crypto-js": "^4.2.2",
+        "@types/node": "^22.7.4",
+        "esbuild": "^0.28.0",
+        "prettier": "^3.3.3",
+        "tsx": "^4.19.1",
+        "typescript": "^5.6.2",
+        "wrangler": "^4.92.0"
+    }
+}
