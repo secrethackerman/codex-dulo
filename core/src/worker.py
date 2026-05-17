@@ -15,7 +15,7 @@ async def on_fetch(request, env):
     if path == "" or path.endswith("/"):
         return Response.new("CinePro Worker is running! (Python Pyodide)")
         
-    elif "stremio/manifest.json" in path:
+    elif "stremio/manifest.json" in path or path == "manifest.json":
         manifest_data = {
             "id": "org.cinepro.worker",
             "version": "1.0.0",
@@ -35,7 +35,7 @@ async def on_fetch(request, env):
             headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
         )
         
-    elif "stremio/stream/movie/" in path:
+    elif "stremio/stream/movie/" in path or path.startswith("stream/movie/"):
         id_part = path.split("/")[-1].replace(".json", "")
         try:
             result = await sourceService.getMovieSources(id_part)
@@ -57,7 +57,7 @@ async def on_fetch(request, env):
             console.error(f"Error fetching movie streams: {err}")
             return Response.new(json.dumps({"streams": []}), headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
             
-    elif "stremio/stream/series/" in path:
+    elif "stremio/stream/series/" in path or path.startswith("stream/series/"):
         id_part = path.split("/")[-1].replace(".json", "")
         parts = id_part.split(':')
         if len(parts) == 3:

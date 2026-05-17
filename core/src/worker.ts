@@ -114,6 +114,20 @@ function parseImdbId(raw: string): string {
     return raw.startsWith('tt') ? raw : `tt${raw}`;
 }
 
+/**
+ * The framework's ProxyService.createProxyUrl() returns a bare relative path
+ * like "/v1/proxy?data=...". In a CF Worker there is no implicit host, so we
+ * must prepend the worker's own origin to make it an absolute URL that Stremio
+ * (or any player) can actually fetch.
+ */
+function resolveStreamUrl(url: string, workerOrigin: string): string {
+    if (!url) return url;
+    // Already absolute — return as-is
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    // Relative proxy path produced by the framework → make it absolute
+    return `${workerOrigin}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
 // ── Stremio manifest ──────────────────────────────────────────────────────────
 
 const MANIFEST = {
@@ -133,6 +147,7 @@ const MANIFEST = {
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
         const url = new URL(request.url);
+        const workerOrigin = url.origin;
         const origin = env.CORS_ORIGIN ?? '*';
 
         // Pre-flight
@@ -153,13 +168,13 @@ export default {
         }
 
         // ── Stremio manifest ───────────────────────────────────────────────
-        if (pathname === '/stremio/manifest.json') {
+        if (pathname === '/stremio/manifest.json' || pathname === '/manifest.json') {
             return json(MANIFEST, 200, origin);
         }
 
         // ── Movie streams ──────────────────────────────────────────────────
-        // /stremio/stream/movie/tt1234567.json
-        const movieMatch = pathname.match(/^\/stremio\/stream\/movie\/([^/]+)\.json$/);
+        // /stremio/stream/movie/tt1234567.json or /stream/movie/tt1234567.json
+        const movieMatch = pathname.match(/^\/(?:stremio\/)?stream\/movie\/([^/]+)\.json$/);
         if (movieMatch) {
             const imdbId = parseImdbId(movieMatch[1]);
             try {
@@ -174,7 +189,7 @@ export default {
                         streams: sources.map((s: any) => ({
                             name: `CinePro [${s.provider?.name ?? 'Unknown'}]`,
                             title: `🎞️ ${s.quality ?? 'Auto'}`,
-                            url: s.url,
+                            url: resolveStreamUrl(s.url, workerOrigin),
                             behaviorHints: {
                                 bingeGroup: `cinepro-${s.provider?.name}-${s.quality}`
                             }
@@ -190,8 +205,8 @@ export default {
         }
 
         // ── Series streams ─────────────────────────────────────────────────
-        // /stremio/stream/series/tt1234567:1:2.json
-        const seriesMatch = pathname.match(/^\/stremio\/stream\/series\/([^/]+)\.json$/);
+        // /stremio/stream/series/tt1234567:1:2.json or /stream/series/tt1234567:1:2.json
+        const seriesMatch = pathname.match(/^\/(?:stremio\/)?stream\/series\/([^/]+)\.json$/);
         if (seriesMatch) {
             const [rawId, s, e] = seriesMatch[1].split(':');
             if (!rawId || !s || !e) return json({ streams: [] }, 200, origin);
@@ -211,7 +226,7 @@ export default {
                         streams: sources.map((src: any) => ({
                             name: `CinePro [${src.provider?.name ?? 'Unknown'}]`,
                             title: `🎞️ ${src.quality ?? 'Auto'}`,
-                            url: src.url,
+                            url: resolveStreamUrl(src.url, workerOrigin),
                             behaviorHints: {
                                 bingeGroup: `cinepro-${src.provider?.name}-${src.quality}`
                             }
@@ -223,6 +238,61 @@ export default {
             } catch (err) {
                 console.error('Series stream error:', err);
                 return json({ streams: [] }, 200, origin);
+            }
+        }
+
+        // ── Proxy route ────────────────────────────────────────────────────
+        // /v1/proxy?data=<encodedJSON>  — forwards requests to upstream URLs
+        if (pathname === '/v1/proxy') {
+            const encodedData = url.searchParams.get('data');
+            if (!encodedData) {
+                return new Response('Missing data parameter', { status: 400, headers: corsHeaders(origin) });
+            }
+            try {
+                const proxyData: { url: string; headers?: Record<string, string> } =
+                    JSON.parse(decodeURIComponent(encodedData));
+                if (!proxyData.url) throw new Error('Missing url');
+
+                const upstreamHeaders: Record<string, string> = {
+                    'User-Agent':
+                        proxyData.headers?.['User-Agent'] ??
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    ...(proxyData.headers ?? {})
+                };
+                // Forward Range header if present (needed for video seeking)
+                const rangeHeader = request.headers.get('Range');
+                if (rangeHeader) upstreamHeaders['Range'] = rangeHeader;
+
+                const upstreamResponse = await fetch(proxyData.url, {
+                    method: 'GET',
+                    headers: upstreamHeaders,
+                    redirect: 'follow'
+                });
+
+                const responseHeaders: Record<string, string> = {
+                    ...corsHeaders(origin),
+                    'Content-Type':
+                        upstreamResponse.headers.get('content-type') ?? 'application/octet-stream'
+                };
+                for (const h of [
+                    'Content-Length',
+                    'Content-Range',
+                    'Accept-Ranges',
+                    'Cache-Control',
+                    'ETag',
+                    'Last-Modified'
+                ]) {
+                    const v = upstreamResponse.headers.get(h);
+                    if (v) responseHeaders[h] = v;
+                }
+
+                return new Response(upstreamResponse.body, {
+                    status: upstreamResponse.status,
+                    headers: responseHeaders
+                });
+            } catch (err) {
+                console.error('Proxy error:', err);
+                return new Response('Proxy error', { status: 502, headers: corsHeaders(origin) });
             }
         }
 
